@@ -27,6 +27,7 @@ from mcp_ollama_tools.tools.file_operations import FileReadTool, FileWriteTool, 
 from mcp_ollama_tools.tools.web_search import WebSearchTool
 from mcp_ollama_tools.tools.system_info import SystemInfoTool
 from mcp_ollama_tools.tools.calculator import CalculatorTool
+from mcp_ollama_tools.tools.weather import WeatherTool
 
 # Register tools globally at startup
 def register_tools_globally():
@@ -37,7 +38,8 @@ def register_tools_globally():
         FileListTool(),
         WebSearchTool(),
         SystemInfoTool(),
-        CalculatorTool()
+        CalculatorTool(),
+        WeatherTool()
     ]
     
     for tool in tools:
@@ -48,6 +50,164 @@ register_tools_globally()
 
 # Debug: Print registered tools
 print(f"DEBUG: Registered tools: {list(registry.get_all_tools().keys())}")
+
+
+def display_weather_card(weather_data: Dict[str, Any], url: str = ""):
+    """Display a rich weather card similar to Google's weather widget."""
+    
+    # Create a styled weather card
+    with st.container():
+        # Weather card with custom styling
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #74b9ff 0%, #0984e3 100%);
+            padding: 1.5rem;
+            border-radius: 15px;
+            color: white;
+            margin: 1rem 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        ">
+        """, unsafe_allow_html=True)
+        
+        # Header row with location and time
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown(f"### 🌍 {weather_data.get('location', 'Unknown Location')}")
+        with col2:
+            st.markdown(f"**{weather_data.get('time', 'Now')}**")
+        
+        # Main weather info row
+        col1, col2, col3 = st.columns([1, 2, 2])
+        
+        with col1:
+            # Weather icon (using emoji for now)
+            icon = "🌧️" if "rain" in weather_data.get('description', '').lower() else "☁️"
+            st.markdown(f"<div style='font-size: 4rem; text-align: center;'>{icon}</div>", 
+                       unsafe_allow_html=True)
+        
+        with col2:
+            # Temperature - large display
+            temp = weather_data.get('temperature', 'N/A')
+            st.markdown(f"<div style='font-size: 3rem; font-weight: bold;'>{temp}</div>", 
+                       unsafe_allow_html=True)
+            st.markdown(f"**{weather_data.get('description', 'N/A').title()}**")
+        
+        with col3:
+            # Weather details
+            st.markdown("**Details:**")
+            st.write(f"💧 Precipitation: {weather_data.get('precipitation', 'N/A')}")
+            st.write(f"💨 Wind: {weather_data.get('wind', 'N/A')}")
+            st.write(f"🌫️ Humidity: {weather_data.get('humidity', 'N/A')}")
+        
+        # Footer with link
+        if url:
+            st.markdown(f"[📊 View Full Forecast]({url})")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def display_web_search_results(results: List[Dict[str, Any]], metadata: Dict[str, Any]):
+    """Display web search results in a beautiful, user-friendly format."""
+    
+    # Header with search query
+    query = metadata.get("query", "Search")
+    results_count = metadata.get("results_count", len(results))
+    search_url = metadata.get("search_url", "")
+    
+    st.markdown(f"### 🔍 Search Results for: **{query}**")
+    
+    # Check if these are fallback results or specific search types
+    is_fallback = any("No instant results found" in result.get("snippet", "") or 
+                     "Search the web for comprehensive" in result.get("snippet", "") for result in results)
+    
+    query_lower = query.lower()
+    
+    if is_fallback:
+        if any(word in query_lower for word in ["weather", "temperature", "forecast"]):
+            st.info("💡 **Weather searches work best with dedicated weather sites:**")
+        elif any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial"]):
+            st.info("💡 **Programming searches - here are the best resources:**")
+        elif any(word in query_lower for word in ["news", "latest", "today", "recent"]):
+            st.info("💡 **Current news and information - try these sources:**")
+        else:
+            st.info("💡 **Here are helpful search options for your query:**")
+    else:
+        # We have actual results
+        result_types = [r.get("source", "") for r in results]
+        if any("Wikipedia" in source for source in result_types):
+            st.success("✅ **Found encyclopedia and reference information:**")
+        elif any("Instant Answer" in source for source in result_types):
+            st.success("✅ **Found instant answers:**")
+        else:
+            st.success("✅ **Found search results:**")
+    
+    # Results summary
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col1:
+        if is_fallback:
+            st.caption(f"Showing {results_count} helpful search options")
+        else:
+            st.caption(f"Found {results_count} results")
+    with col2:
+        if search_url:
+            st.link_button("🔗 More Results", search_url)
+    with col3:
+        st.caption("Multiple Sources")
+    
+    st.markdown("---")
+    
+    # Display each search result as a card
+    for i, result in enumerate(results):
+        title = result.get("title", "Untitled")
+        snippet = result.get("snippet", "No description available")
+        url = result.get("url", "")
+        source = result.get("source", "Unknown")
+        result_type = result.get("type", "normal")
+        
+        # Check if this is a weather card that needs special display
+        if result_type == "weather_card" and result.get("weather_data"):
+            display_weather_card(result["weather_data"], url)
+        else:
+            # Create a card-like container for normal results
+            with st.container():
+                # Title with link
+                if url:
+                    st.markdown(f"**[{title}]({url})**")
+                else:
+                    st.markdown(f"**{title}**")
+                
+                # Snippet/description
+                st.markdown(f"{snippet}")
+                
+                # Source and URL info
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    if url:
+                        # Extract domain from URL for display
+                        try:
+                            from urllib.parse import urlparse
+                            domain = urlparse(url).netloc
+                            st.caption(f"🌐 {domain} • {source}")
+                        except:
+                            st.caption(f"🌐 {source}")
+                    else:
+                        st.caption(f"📄 {source}")
+                
+                with col2:
+                    if url:
+                        st.link_button("Visit", url)
+        
+        # Add spacing between results
+        if i < len(results) - 1:
+            st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Footer with additional info
+    st.markdown("---")
+    if is_fallback:
+        st.caption("💡 **Tip**: Click the links above to get real-time information, or try a more specific search query!")
+    else:
+        st.caption("💡 **Tip**: Ask follow-up questions about any of these results!")
+
 
 # Page configuration
 st.set_page_config(
@@ -116,7 +276,8 @@ def initialize_system():
             FileListTool(),
             WebSearchTool(),
             SystemInfoTool(),
-            CalculatorTool()
+            CalculatorTool(),
+            WeatherTool()
         ]
         
         for tool in tools:
@@ -214,6 +375,22 @@ def quick_tool_selection(user_input: str) -> tuple[str, dict]:
     # System info
     elif any(word in user_lower for word in ["memory", "cpu", "disk", "system"]):
         result = "system_info", {"info_type": "all"}
+    
+    # Weather queries - check before web search
+    elif any(word in user_lower for word in ["weather", "temperature", "forecast", "climate", "sunny", "rainy", "cloudy"]):
+        # Extract location from weather query
+        location = user_input.lower()
+        for word in ["weather", "temperature", "forecast", "climate", "in", "for", "today", "tomorrow", "what", "is", "the"]:
+            location = location.replace(word, "").strip()
+        
+        # Default to a generic location if none found
+        if not location or len(location) < 2:
+            location = "current location"
+        
+        # Check if forecast is requested
+        include_forecast = any(word in user_lower for word in ["forecast", "week", "tomorrow", "next", "days"])
+        
+        result = "weather", {"location": location, "forecast": include_forecast}
     
     # Web search - trigger for search requests
     elif any(word in user_lower for word in ["search", "find", "look up", "google", "what is", "who is", "where is", "tutorials", "python"]):
@@ -519,25 +696,59 @@ def main():
                         )
                         
                         if execution["success"]:
-                            # Try different result fields
-                            result_data = execution.get("result") or execution.get("data")
-                            if result_data:
-                                result_str = str(result_data)
-                                if len(result_str) > 500:
-                                    result_str = result_str[:500] + "..."
-                                response_parts.append(f"📋 **Result**: {result_str}\n")
+                            # Check if this is a web search result
+                            if execution["tool"] == "web_search":
+                                result_data = execution.get("result") or execution.get("data")
+                                if result_data and isinstance(result_data, list):
+                                    display_web_search_results(result_data, execution.get("metadata", {}))
+                                else:
+                                    response_parts.append(f"📋 **Search completed but no results to display**\n")
+                            # Check if this is a weather result
+                            elif execution["tool"] == "weather":
+                                result_data = execution.get("result") or execution.get("data")
+                                if result_data and isinstance(result_data, dict):
+                                    display_weather_card(result_data)
+                                else:
+                                    response_parts.append(f"📋 **Weather data not available**\n")
                             else:
-                                response_parts.append(f"✅ **Completed successfully**\n")
+                                # Handle other tools normally
+                                result_data = execution.get("result") or execution.get("data")
+                                if result_data:
+                                    result_str = str(result_data)
+                                    if len(result_str) > 500:
+                                        result_str = result_str[:500] + "..."
+                                    response_parts.append(f"📋 **Result**: {result_str}\n")
+                                else:
+                                    response_parts.append(f"✅ **Completed successfully**\n")
                 
-                response = "\n".join(response_parts)
+                # Only show text response for tools that don't have special displays
+                special_tools = ["web_search", "weather"]
+                has_special_display = any(ex.get("tool") in special_tools and ex.get("success") for ex in execution_history)
                 
-                # Store message
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": response
-                })
+                if not has_special_display:
+                    response = "\n".join(response_parts)
+                    st.markdown(response)
                 
-                st.markdown(response)
+                # Store message (simplified for special display tools)
+                if has_special_display:
+                    # Check which special tool was used
+                    if any(ex.get("tool") == "web_search" and ex.get("success") for ex in execution_history):
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": "🔍 Web search completed - results displayed above"
+                        })
+                    elif any(ex.get("tool") == "weather" and ex.get("success") for ex in execution_history):
+                        st.session_state.messages.append({
+                            "role": "assistant", 
+                            "content": "🌤️ Weather information displayed above"
+                        })
+                else:
+                    response = "\n".join(response_parts)
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": response
+                    })
+                    st.markdown(response)
                 
                 # Show simple execution summary
                 if execution_history:

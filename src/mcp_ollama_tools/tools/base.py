@@ -114,7 +114,6 @@ class ToolRegistry:
                 error=str(e)
             )
 
-
 # Global tool registry instance
 registry = ToolRegistry()
 

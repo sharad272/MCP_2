@@ -75,6 +75,7 @@ python -m src.mcp_ollama_tools.server
 | 📁 **File Operations** | Read, write, list files and directories | "Read app.py", "List files in src/" |
 | 🌐 **Web Search** | Search the internet using DuckDuckGo | "Search for Python tutorials" |
 | 🧮 **Calculator** | Perform mathematical calculations | "Calculate 15% of 200", "What's sin(π/2)?" |
+| 🌤️ **Weather** | Get live weather information and forecasts | "Weather in New York", "Forecast for London" |
 | 💻 **System Info** | Get system information (CPU, memory, etc.) | "Show system memory", "CPU usage" |
 
 ## 💬 Example Conversations
@@ -145,6 +146,18 @@ AI: ✅ Using calculator tool: 1000 * (1 + 0.05) ** 10 = $1628.89
 export OLLAMA_HOST=http://localhost:11434
 export OLLAMA_MODEL=llama3.2:latest
 ```
+
+### Weather Tool
+
+The weather tool uses **Open-Meteo**, a completely free and open source weather API that requires no API key or registration. It provides:
+
+- ✅ **Live weather data** for any location worldwide
+- ✅ **7-day forecasts** with detailed information
+- ✅ **No API key required** - completely free
+- ✅ **Open source** - transparent and reliable
+- ✅ **Global coverage** with accurate data
+
+The weather tool automatically falls back to sample data if the API is temporarily unavailable.
 
 ## 🔧 Development
 
