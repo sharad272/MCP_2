@@ -108,11 +108,37 @@ class DecisionEngine:
             
         except Exception as e:
             logger.error(f"Error processing request: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "execution_history": self.execution_history
-            }
+            
+            # Fallback to web search if LLM fails
+            try:
+                logger.info("Falling back to web search due to LLM error")
+                fallback_result = await self.tool_registry.execute_tool(
+                    "web_search", 
+                    {"query": user_request}
+                )
+                
+                return {
+                    "success": fallback_result.success,
+                    "primary_result": fallback_result,
+                    "execution_history": [{
+                        "tool": "web_search",
+                        "parameters": {"query": user_request},
+                        "success": fallback_result.success,
+                        "confidence": 0.5,
+                        "reasoning": "Fallback to web search due to LLM error",
+                        "result": fallback_result.data if fallback_result.success else None,
+                        "error": fallback_result.error if not fallback_result.success else None,
+                        "metadata": fallback_result.metadata
+                    }],
+                    "total_tools_executed": 1
+                }
+            except Exception as fallback_error:
+                logger.error(f"Fallback also failed: {fallback_error}")
+                return {
+                    "success": False,
+                    "error": f"Both LLM and fallback failed: {str(e)} | {str(fallback_error)}",
+                    "execution_history": self.execution_history
+                }
     
     async def _execute_tool_with_retry(
         self, 

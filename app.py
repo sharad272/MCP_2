@@ -589,6 +589,10 @@ def quick_tool_selection(user_input: str) -> tuple[str, dict]:
         if query and len(query) > 2:
             result = "web_search", {"query": query}
     
+    # If no specific tool was selected, default to web search (most versatile)
+    if result == (None, {}):
+        result = "web_search", {"query": user_input.strip()}
+    
     # Debug: Print what we selected
     print(f"DEBUG quick_tool_selection: input='{user_input}' -> tool={result[0]}, params={result[1]}")
     

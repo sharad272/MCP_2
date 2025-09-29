@@ -108,16 +108,18 @@ class OllamaClient:
         return f"""Available tools: {', '.join(tools)}
 
 Tool selection rules:
-- web_search: For scores, news, live data, current info, sports, tutorials, facts, "what is X", "who is Y"
-- weather: For weather/temperature/forecast queries
-- calculator: For math calculations
-- system_info: For computer system information
-- file_list: For file/directory operations
+- web_search: DEFAULT for most queries - scores, news, live data, current info, sports, tutorials, facts, "what is X", "who is Y", general questions
+- weather: ONLY for weather/temperature/forecast queries
+- calculator: ONLY for math calculations
+- system_info: ONLY for computer system information
+- file_list: ONLY for file/directory operations
+
+DEFAULT RULE: If unsure, use web_search (it handles most queries)
 
 Examples:
 - "India vs Australia score" → web_search
-- "Live cricket match" → web_search
-- "What is Python" → web_search
+- "Tell me about cars" → web_search
+- "Latest technology trends" → web_search
 - "Weather in Berlin" → weather
 - "15 + 20" → calculator
 
@@ -262,10 +264,11 @@ Respond with JSON:
             return "system_info", {"info_type": "all"}
         
         # Default: Web search for any other queries (since it's most versatile)
+        # This ensures any unmatched query gets handled by web search
         if "web_search" in tool_names:
             return "web_search", {"query": user_query}
         
-        # Final fallback
+        # Final fallback (should rarely be needed since web_search handles most cases)
         if "file_list" in tool_names:
             return "file_list", {"directory": "."}
         
