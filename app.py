@@ -392,14 +392,30 @@ def quick_tool_selection(user_input: str) -> tuple[str, dict]:
         
         result = "weather", {"location": location, "forecast": include_forecast}
     
-    # Web search - trigger for search requests
-    elif any(word in user_lower for word in ["search", "find", "look up", "google", "what is", "who is", "where is", "tutorials", "python"]):
-        # Clean up the query - be more aggressive
-        query = user_input.lower()
-        for word in ["search for", "search", "find", "look up", "google", "what is", "who is", "where is"]:
+    # Web search - expanded patterns for better coverage
+    elif (
+        # Explicit search terms
+        any(word in user_lower for word in ["search", "find", "look up", "google", "what is", "who is", "where is", "when is", "how is"]) or
+        # Sports and scores
+        any(word in user_lower for word in ["score", "vs", "match", "game", "tournament", "league", "cricket", "football", "basketball", "tennis"]) or
+        # News and current events  
+        any(word in user_lower for word in ["news", "latest", "today", "yesterday", "recent", "current", "breaking"]) or
+        # Technology and tutorials
+        any(word in user_lower for word in ["tutorial", "guide", "how to", "python", "javascript", "programming", "code"]) or
+        # General information queries
+        any(word in user_lower for word in ["information", "about", "details", "explain", "definition", "meaning"]) or
+        # Live data queries
+        any(word in user_lower for word in ["live", "real time", "current", "update", "status"]) or
+        # Questions that need web search
+        (user_lower.startswith(("what", "who", "where", "when", "how", "why")) and "weather" not in user_lower and "time" not in user_lower)
+    ):
+        # Clean up the query - be more aggressive but preserve important context
+        query = user_input
+        # Remove search-specific words but keep the main query intact
+        for word in ["search for", "search", "find me", "look up", "google", "tell me"]:
             query = query.replace(word, "").strip()
         
-        # If no cleanup worked, use the original input
+        # Don't over-clean - if we removed too much, use original
         if not query or len(query) < 3:
             query = user_input.strip()
             

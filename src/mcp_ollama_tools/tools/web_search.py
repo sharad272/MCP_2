@@ -1,11 +1,52 @@
 """Web search tool using DuckDuckGo."""
 
+from __future__ import annotations
+
+import itertools
+from dataclasses import dataclass
+from html import unescape
+import re
+from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+
 import httpx
-from typing import Any, Dict, List
-from urllib.parse import quote_plus
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:  # pragma: no cover - optional dependency
+    BeautifulSoup = None  # type: ignore[assignment]
 
 from ..ollama_client import ToolDefinition
 from .base import BaseTool, ToolResult
+
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+HTML_SEARCH_URL = "https://html.duckduckgo.com/html/"
+
+
+@dataclass
+class SearchResult:
+    """Normalized representation of a single web search hit."""
+
+    title: str
+    url: str
+    snippet: str
+    source: str
+    score: float = 0.0
+    type: str = "web"
+    metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = {
+            "title": self.title,
+            "url": self.url,
+            "snippet": self.snippet,
+            "source": self.source,
+            "type": self.type,
+        }
+        if self.metadata:
+            data.update(self.metadata)
+        return data
 
 
 class WebSearchTool(BaseTool):
@@ -52,6 +93,7 @@ class WebSearchTool(BaseTool):
     async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
         query = parameters.get("query", "")
         max_results = parameters.get("max_results", 5)
+        region = parameters.get("region", "us-en")
         
         if not query or query.strip() == "":
             return ToolResult(
@@ -61,11 +103,11 @@ class WebSearchTool(BaseTool):
         
         try:
             encoded_query = quote_plus(query)
-            results = []
+            results: List[SearchResult] = []
             
             # Try multiple search approaches for better coverage
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(timeout=10.0) as client:
                     # Approach 1: DuckDuckGo Instant Answer API
                     ddg_url = f"https://api.duckduckgo.com/?q={encoded_query}&format=json&no_html=1&skip_disambig=1"
                     response = await client.get(ddg_url)
@@ -81,14 +123,23 @@ class WebSearchTool(BaseTool):
                     if data.get("RelatedTopics"):
                         print(f"DEBUG: Found {len(data['RelatedTopics'])} related topics")
                     
-                    # Parse DuckDuckGo results more thoroughly
-                    results.extend(self._parse_duckduckgo_response(data, query, encoded_query))
+                    # Parse DuckDuckGo instant answer results
+                    instant_results = self._parse_duckduckgo_response(data, query, encoded_query)
+
+                    # Approach 1b: scrape regular HTML results for more specific hits
+                    html_results = await self._scrape_duckduckgo_results(
+                        client, query, encoded_query, region, max_results
+                    )
+
+                    results = self._merge_results(html_results, instant_results, max_results)
                     
                     # Approach 2: If still no results, try a simplified search
                     if not results:
-                        print(f"DEBUG: No results from instant API, trying alternative approaches")
+                        print("DEBUG: No results from instant API, trying alternative approaches")
                         # Try searching for more general topics that might have instant answers
-                        alt_results = await self._get_alternative_search_results(client, query, encoded_query, max_results)
+                        alt_results = await self._get_alternative_search_results(
+                            client, query, encoded_query, max_results
+                        )
                         results.extend(alt_results)
                         
             except ImportError:
@@ -107,64 +158,52 @@ class WebSearchTool(BaseTool):
             # If no results, provide helpful fallback with multiple options
             if not results:
                 # Create multiple helpful search suggestions
-                suggestions = []
+                suggestions: List[SearchResult] = []
                 
                 # Check for weather queries and try to get actual weather data
                 if any(word in query.lower() for word in ["weather", "temperature", "forecast", "climate"]):
-                    weather_results = await self._get_weather_data(client, query, encoded_query)
+                    weather_results = await self._get_weather_data(
+                        client, query, encoded_query
+                    )
                     if weather_results:
                         suggestions.extend(weather_results)
                     else:
-                        # Fallback to weather sites
-                        suggestions.extend([
-                            {
-                                "title": f"🌤️ Weather for: {query}",
-                                "snippet": "Get current weather conditions, forecasts, and detailed meteorological information.",
-                                "url": f"https://www.weather.com/search/enhancedlocalsearch?where={quote_plus(query.replace('weather', '').replace('in', '').strip())}",
-                                "source": "Weather.com"
-                            },
-                            {
-                                "title": f"📊 Weather Forecast: {query}",
-                                "snippet": "Detailed weather forecast with hourly and 10-day predictions.",
-                                "url": f"https://www.accuweather.com/en/search-locations?query={quote_plus(query.replace('weather', '').replace('in', '').strip())}",
-                                "source": "AccuWeather"
-                            }
-                        ])
+                        suggestions.extend(self._build_weather_fallbacks(query))
                 
                 # Add general DuckDuckGo search as fallback
-                suggestions.append({
-                    "title": f"🔍 Search: {query}",
-                    "snippet": f"Search for '{query}' across the web for comprehensive results and current information.",
-                    "url": f"https://duckduckgo.com/?q={encoded_query}",
-                    "source": "DuckDuckGo"
-                })
+                suggestions.append(
+                    SearchResult(
+                        title=f"🔍 Search: {query}",
+                        snippet=f"Search for '{query}' across the web for comprehensive results and current information.",
+                        url=f"https://duckduckgo.com/?q={encoded_query}",
+                        source="DuckDuckGo",
+                    )
+                )
                 
                 # Add Google search alternative
-                suggestions.append({
-                    "title": f"🌐 Alternative Search: {query}",
-                    "snippet": f"Search '{query}' on Google for additional results and perspectives.",
-                    "url": f"https://www.google.com/search?q={encoded_query}",
-                    "source": "Google"
-                })
+                suggestions.append(
+                    SearchResult(
+                        title=f"🌐 Alternative Search: {query}",
+                        snippet=f"Search '{query}' on Google for additional results and perspectives.",
+                        url=f"https://www.google.com/search?q={encoded_query}",
+                        source="Google",
+                    )
+                )
                 
                 results = suggestions[:max_results]
             
             return ToolResult(
                 success=True,
-                data=results[:max_results],
+                data=[result.to_dict() for result in results[:max_results]],
                 metadata={
-                    "query": query, 
+                    "query": query,
+                    "region": region,
                     "results_count": len(results),
-                    "search_url": f"https://duckduckgo.com/?q={encoded_query}"
+                    "search_url": f"https://duckduckgo.com/?q={encoded_query}&kl={region}"
                 }
             )
             
-        except httpx.TimeoutException:
-            return ToolResult(
-                success=False,
-                error="Search request timed out. Try a simpler query."
-            )
-        except Exception as e:
+        except Exception as exc:
             # Fallback to search URL on any error
             encoded_query = quote_plus(query)
             return ToolResult(
@@ -175,39 +214,59 @@ class WebSearchTool(BaseTool):
                     "url": f"https://duckduckgo.com/?q={encoded_query}",
                     "source": "DuckDuckGo"
                 }],
-                metadata={"query": query, "results_count": 1, "fallback": True}
+                metadata={
+                    "query": query,
+                    "results_count": 1,
+                    "fallback": True,
+                    "error": str(exc),
+                }
             )
     
-    def _parse_duckduckgo_response(self, data: dict, query: str, encoded_query: str) -> List[dict]:
+    def _parse_duckduckgo_response(
+        self,
+        data: dict,
+        query: str,
+        encoded_query: str,
+    ) -> List[SearchResult]:
         """Parse DuckDuckGo API response more thoroughly."""
-        results = []
+        results: List[SearchResult] = []
         
         # Add abstract if available
         if data.get("Abstract"):
-            results.append({
-                "title": data.get("Heading", query.title()),
-                "snippet": data["Abstract"][:200] + "..." if len(data["Abstract"]) > 200 else data["Abstract"],
-                "url": data.get("AbstractURL", f"https://duckduckgo.com/?q={encoded_query}"),
-                "source": data.get("AbstractSource", "Wikipedia")
-            })
+            results.append(
+                SearchResult(
+                    title=data.get("Heading", query.title()),
+                    snippet=data["Abstract"][:200] + "..." if len(data["Abstract"]) > 200 else data["Abstract"],
+                    url=data.get("AbstractURL", f"https://duckduckgo.com/?q={encoded_query}"),
+                    source=data.get("AbstractSource", "DuckDuckGo"),
+                    type="abstract",
+                )
+            )
         
         # Add answer if available
         if data.get("Answer"):
-            results.append({
-                "title": f"Answer: {query}",
-                "snippet": data["Answer"],
-                "url": data.get("AnswerURL", f"https://duckduckgo.com/?q={encoded_query}"),
-                "source": data.get("AnswerType", "Instant Answer")
-            })
+            results.append(
+                SearchResult(
+                    title=f"Answer: {query}",
+                    snippet=data["Answer"],
+                    url=data.get("AnswerURL", f"https://duckduckgo.com/?q={encoded_query}"),
+                    source=data.get("AnswerType", "Instant Answer"),
+                    type="answer",
+                    score=0.9,
+                )
+            )
         
         # Add definition if available
         if data.get("Definition"):
-            results.append({
-                "title": f"Definition: {query}",
-                "snippet": data["Definition"][:200] + "..." if len(data["Definition"]) > 200 else data["Definition"],
-                "url": data.get("DefinitionURL", f"https://duckduckgo.com/?q={encoded_query}"),
-                "source": data.get("DefinitionSource", "Dictionary")
-            })
+            results.append(
+                SearchResult(
+                    title=f"Definition: {query}",
+                    snippet=data["Definition"][:200] + "..." if len(data["Definition"]) > 200 else data["Definition"],
+                    url=data.get("DefinitionURL", f"https://duckduckgo.com/?q={encoded_query}"),
+                    source=data.get("DefinitionSource", "Dictionary"),
+                    type="definition",
+                )
+            )
         
         # Add related topics (these are often Wikipedia articles)
         for topic in data.get("RelatedTopics", []):
@@ -221,12 +280,15 @@ class WebSearchTool(BaseTool):
                 
                 snippet = topic["Text"][:200] + "..." if len(topic["Text"]) > 200 else topic["Text"]
                 
-                results.append({
-                    "title": title,
-                    "snippet": snippet,
-                    "url": topic.get("FirstURL", f"https://duckduckgo.com/?q={encoded_query}"),
-                    "source": "Wikipedia/Related"
-                })
+                results.append(
+                    SearchResult(
+                        title=title,
+                        snippet=snippet,
+                        url=topic.get("FirstURL", f"https://duckduckgo.com/?q={encoded_query}"),
+                        source="Related",
+                        type="related",
+                    )
+                )
         
         # Check for infobox data
         if data.get("Infobox"):
@@ -234,83 +296,186 @@ class WebSearchTool(BaseTool):
             if infobox.get("content"):
                 for item in infobox["content"]:
                     if item.get("data_type") == "string" and item.get("value"):
-                        results.append({
-                            "title": f"{query} - {item.get('label', 'Info')}",
-                            "snippet": str(item["value"])[:200],
-                            "url": f"https://duckduckgo.com/?q={encoded_query}",
-                            "source": "Infobox"
-                        })
+                        results.append(
+                            SearchResult(
+                                title=f"{query} - {item.get('label', 'Info')}",
+                                snippet=str(item["value"])[:200],
+                                url=f"https://duckduckgo.com/?q={encoded_query}",
+                                source="Infobox",
+                                type="fact",
+                            )
+                        )
                         break  # Just take the first meaningful infobox item
         
         return results
     
-    async def _get_alternative_search_results(self, client, query: str, encoded_query: str, max_results: int) -> List[dict]:
+    async def _scrape_duckduckgo_results(
+        self,
+        client: httpx.AsyncClient,
+        query: str,
+        encoded_query: str,
+        region: str,
+        max_results: int,
+    ) -> List[SearchResult]:
+        """Scrape the DuckDuckGo HTML page for more specific web results."""
+        if BeautifulSoup is None:
+            return []  # BeautifulSoup not available
+
+        params = {
+            "q": query,
+            "kl": region,
+            "df": "y",
+        }
+
+        response = await client.post(
+            HTML_SEARCH_URL,
+            data=params,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+        )
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        results: List[SearchResult] = []
+
+        for result_div in soup.select("div.result"):
+            link = result_div.select_one("a.result__a")
+            snippet_div = result_div.select_one("div.result__snippet")
+
+            if not link:
+                continue
+
+            title = unescape(link.get_text(strip=True))
+            url = self._clean_result_url(link.get("href", ""))
+            snippet = unescape(snippet_div.get_text(" ", strip=True)) if snippet_div else ""
+
+            if not url:
+                continue
+
+            results.append(
+                SearchResult(
+                    title=title,
+                    url=url,
+                    snippet=self._normalize_snippet(snippet),
+                    source=urlparse(url).netloc or "DuckDuckGo",
+                    score=1.0,
+                )
+            )
+
+            if len(results) >= max_results:
+                break
+
+        return results
+
+    def _merge_results(
+        self,
+        primary: List[SearchResult],
+        secondary: Iterable[SearchResult],
+        max_results: int,
+    ) -> List[SearchResult]:
+        """Combine scraped results with instant answers while removing duplicates."""
+        merged: List[SearchResult] = []
+        seen_urls = set()
+
+        for result in itertools.chain(primary, secondary):
+            normalized_url = self._normalize_url(result.url)
+            if normalized_url in seen_urls:
+                continue
+
+            seen_urls.add(normalized_url)
+            merged.append(result)
+
+            if len(merged) >= max_results:
+                break
+
+        return merged
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        parsed = urlparse(url)
+        normalized = parsed._replace(query="", fragment="")
+        return normalized.geturl()
+
+    @staticmethod
+    def _normalize_snippet(snippet: str) -> str:
+        snippet = re.sub(r"\s+", " ", snippet).strip()
+        return snippet
+    
+    async def _get_alternative_search_results(self, client, query: str, encoded_query: str, max_results: int) -> List[SearchResult]:
         """Get alternative search results when instant answers don't work."""
-        results = []
+        results: List[SearchResult] = []
         
         # Try to create helpful search results based on query type
         query_lower = query.lower()
         
         # Programming/technical queries
         if any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial", "how to"]):
-            results.extend([
-                {
-                    "title": f"📚 {query} - Stack Overflow",
-                    "snippet": "Find programming solutions, code examples, and developer discussions on Stack Overflow.",
-                    "url": f"https://stackoverflow.com/search?q={encoded_query}",
-                    "source": "Stack Overflow"
-                },
-                {
-                    "title": f"📖 {query} - Documentation & Tutorials",
-                    "snippet": "Official documentation, tutorials, and guides for programming topics.",
-                    "url": f"https://duckduckgo.com/?q={encoded_query}+documentation+tutorial",
-                    "source": "Documentation"
-                }
-            ])
+            results.extend(
+                [
+                    SearchResult(
+                        title=f"📚 {query} - Stack Overflow",
+                        snippet="Find programming solutions, code examples, and developer discussions on Stack Overflow.",
+                        url=f"https://stackoverflow.com/search?q={encoded_query}",
+                        source="Stack Overflow",
+                        type="programming",
+                    ),
+                    SearchResult(
+                        title=f"📖 {query} - Documentation & Tutorials",
+                        snippet="Official documentation, tutorials, and guides for programming topics.",
+                        url=f"https://duckduckgo.com/?q={encoded_query}+documentation+tutorial",
+                        source="Documentation",
+                        type="reference",
+                    ),
+                ]
+            )
         
         # News/current events
         elif any(word in query_lower for word in ["news", "latest", "today", "recent", "current"]):
-            results.extend([
-                {
-                    "title": f"📰 Latest News: {query}",
-                    "snippet": "Get the latest news and current information from reliable news sources.",
-                    "url": f"https://duckduckgo.com/?q={encoded_query}&iar=news",
-                    "source": "News Search"
-                }
-            ])
+            results.append(
+                SearchResult(
+                    title=f"📰 Latest News: {query}",
+                    snippet="Get the latest news and current information from reliable news sources.",
+                    url=f"https://duckduckgo.com/?q={encoded_query}&iar=news",
+                    source="News",
+                    type="news",
+                )
+            )
         
         # Academic/research queries
         elif any(word in query_lower for word in ["research", "study", "academic", "paper", "science"]):
-            results.extend([
-                {
-                    "title": f"🎓 Academic Research: {query}",
-                    "snippet": "Find academic papers, research studies, and scholarly articles.",
-                    "url": f"https://scholar.google.com/scholar?q={encoded_query}",
-                    "source": "Google Scholar"
-                }
-            ])
+            results.append(
+                SearchResult(
+                    title=f"🎓 Academic Research: {query}",
+                    snippet="Find academic papers, research studies, and scholarly articles.",
+                    url=f"https://scholar.google.com/scholar?q={encoded_query}",
+                    source="Scholar",
+                    type="academic",
+                )
+            )
         
         # Always add general search options
-        results.extend([
-            {
-                "title": f"🔍 Web Search: {query}",
-                "snippet": f"Search the web for comprehensive information about '{query}'.",
-                "url": f"https://duckduckgo.com/?q={encoded_query}",
-                "source": "DuckDuckGo"
-            },
-            {
-                "title": f"🌐 Alternative Search: {query}",
-                "snippet": f"Search on Google for additional perspectives and results.",
-                "url": f"https://www.google.com/search?q={encoded_query}",
-                "source": "Google"
-            }
-        ])
+        results.extend(
+            [
+                SearchResult(
+                    title=f"🔍 Web Search: {query}",
+                    snippet=f"Search the web for comprehensive information about '{query}'.",
+                    url=f"https://duckduckgo.com/?q={encoded_query}",
+                    source="DuckDuckGo",
+                ),
+                SearchResult(
+                    title=f"🌐 Alternative Search: {query}",
+                    snippet=f"Search on Google for additional perspectives and results.",
+                    url=f"https://www.google.com/search?q={encoded_query}",
+                    source="Google",
+                ),
+            ]
+        )
         
         return results[:max_results]
     
-    async def _get_weather_data(self, client, query: str, encoded_query: str) -> List[dict]:
+    async def _get_weather_data(self, client, query: str, encoded_query: str) -> List[SearchResult]:
         """Try to get actual weather data from various APIs."""
-        results = []
+        results: List[SearchResult] = []
         
         # Extract location from query
         location = query.lower()
@@ -331,28 +496,32 @@ class WebSearchTool(BaseTool):
                 "temperature": "26°C",
                 "description": "Light rain",
                 "precipitation": "45%",
-                "humidity": "82%", 
+                "humidity": "82%",
                 "wind": "8 km/h",
-                "time": "Tuesday, 11:00 am"
+                "time": "Tuesday, 11:00 am",
             }
             
-            results.append({
-                "title": f"🌤️ Current Weather in {weather_data['location']}",
-                "snippet": f"Temperature: {weather_data['temperature']} • {weather_data['description']} • Humidity: {weather_data['humidity']} • Wind: {weather_data['wind']}",
-                "url": f"https://openweathermap.org/city/{encoded_query}",
-                "source": "Weather Data",
-                "weather_data": weather_data,  # Add structured weather data
-                "type": "weather_card"  # Special type for rich display
-            })
+            results.append(
+                SearchResult(
+                    title=f"🌤️ Current Weather in {weather_data['location']}",
+                    snippet=f"Temperature: {weather_data['temperature']} • {weather_data['description']} • Humidity: {weather_data['humidity']} • Wind: {weather_data['wind']}",
+                    url=f"https://openweathermap.org/city/{encoded_query}",
+                    source="Weather",
+                    type="weather_card",
+                    metadata={"weather_data": weather_data},
+                )
+            )
             
             # Add forecast info
-            results.append({
-                "title": f"📊 Extended Forecast for {weather_data['location']}",
-                "snippet": f"5-day weather forecast with hourly updates. Current conditions: {weather_data['description']} with {weather_data['precipitation']} chance of precipitation.",
-                "url": f"https://weather.com/weather/tenday/l/{encoded_query}",
-                "source": "Weather Forecast",
-                "type": "forecast"
-            })
+            results.append(
+                SearchResult(
+                    title=f"📊 Extended Forecast for {weather_data['location']}",
+                    snippet=f"5-day weather forecast with hourly updates. Current conditions: {weather_data['description']} with {weather_data['precipitation']} chance of precipitation.",
+                    url=f"https://weather.com/weather/tenday/l/{encoded_query}",
+                    source="Weather",
+                    type="forecast",
+                )
+            )
             
         except Exception as e:
             print(f"DEBUG: Weather API error: {e}")
@@ -360,4 +529,56 @@ class WebSearchTool(BaseTool):
             pass
         
         return results
+
+    def _build_weather_fallbacks(self, query: str) -> List[SearchResult]:
+        clean_location = query.lower()
+        for word in ["weather", "in", "for", "forecast", "temperature"]:
+            clean_location = clean_location.replace(word, "")
+        clean_location = clean_location.strip()
+
+        if not clean_location:
+            clean_location = query
+
+        return [
+            SearchResult(
+                title=f"🌤️ Weather for: {query}",
+                snippet="Get current weather conditions, forecasts, and detailed meteorological information.",
+                url=f"https://www.weather.com/search/enhancedlocalsearch?where={quote_plus(clean_location)}",
+                source="weather.com",
+                type="weather",
+            ),
+            SearchResult(
+                title=f"📊 Weather Forecast: {query}",
+                snippet="Detailed weather forecast with hourly and 10-day predictions.",
+                url=f"https://www.accuweather.com/en/search-locations?query={quote_plus(clean_location)}",
+                source="accuweather.com",
+                type="weather",
+            ),
+        ]
+
+    def _clean_result_url(self, href: str) -> str:
+        """Clean and normalize a URL from DuckDuckGo search results."""
+        if not href:
+            return ""
+        
+        # DuckDuckGo sometimes wraps URLs in redirects
+        if href.startswith("/l/?kh=-1&uddg="):
+            # Extract the actual URL from DuckDuckGo's redirect
+            try:
+                parsed = urlparse(href)
+                query_params = parse_qs(parsed.query)
+                if "uddg" in query_params:
+                    return unquote(query_params["uddg"][0])
+            except Exception:
+                pass
+        
+        # Handle relative URLs
+        if href.startswith("/"):
+            return f"https://duckduckgo.com{href}"
+        
+        # Return URL as-is if it looks valid
+        if href.startswith(("http://", "https://")):
+            return href
+        
+        return ""
 

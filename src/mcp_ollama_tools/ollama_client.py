@@ -102,16 +102,26 @@ class OllamaClient:
             raise RuntimeError(f"Tool selection failed: {e}")
     
     def _build_system_prompt(self, available_tools: List[ToolDefinition]) -> str:
-        """Ultra-short prompt for speed."""
+        """Enhanced prompt for better tool selection."""
         tools = [tool.name for tool in available_tools]
         
-        return f"""Tools: {', '.join(tools)}
+        return f"""Available tools: {', '.join(tools)}
 
-Rules:
-- Answer directly for simple questions
-- Use tools only for external actions
+Tool selection rules:
+- web_search: For scores, news, live data, current info, sports, tutorials, facts, "what is X", "who is Y"
+- weather: For weather/temperature/forecast queries
+- calculator: For math calculations
+- system_info: For computer system information
+- file_list: For file/directory operations
 
-JSON format:
+Examples:
+- "India vs Australia score" → web_search
+- "Live cricket match" → web_search
+- "What is Python" → web_search
+- "Weather in Berlin" → weather
+- "15 + 20" → calculator
+
+Respond with JSON:
 {{"selected_tool": "tool_name", "parameters": {{"key": "value"}}}}"""
     
     def _build_user_prompt(self, user_query: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -198,29 +208,64 @@ JSON format:
             )
     
     def _smart_fallback(self, user_query: str, available_tools: List[ToolDefinition]) -> tuple[str, dict]:
-        """Smart fallback tool selection based on keywords."""
+        """Smart fallback tool selection based on keywords and patterns."""
         user_lower = user_query.lower()
         tool_names = [tool.name for tool in available_tools]
         
-        # Simple keyword matching with better parameter extraction
+        # Priority 1: Calculator for math operations
         if any(word in user_lower for word in ["calculate", "math", "compute"]) and "calculator" in tool_names:
-            # Try to extract a mathematical expression
             import re
             numbers_and_ops = re.findall(r'[\d+\-*/().\s]+', user_query)
             expr = numbers_and_ops[0].strip() if numbers_and_ops else "2+2"
             return "calculator", {"expression": expr}
-        elif any(word in user_lower for word in ["file", "read", "list"]) and "file_list" in tool_names:
-            return "file_list", {"directory": "."}
-        elif any(word in user_lower for word in ["search", "find"]) and "web_search" in tool_names:
-            # Clean the query
-            query = user_query.replace("search for", "").replace("find", "").strip()
-            if not query:
-                query = "python programming"
+        
+        # Priority 2: Weather for weather queries
+        elif any(word in user_lower for word in ["weather", "temperature", "forecast"]) and "weather" in tool_names:
+            # Extract location if possible
+            location = user_query.lower()
+            for word in ["weather", "temperature", "forecast", "in", "for", "today", "tomorrow", "what", "is", "the"]:
+                location = location.replace(word, "").strip()
+            if not location or len(location) < 2:
+                location = "current location"
+            include_forecast = any(word in user_lower for word in ["forecast", "week", "tomorrow", "next", "days"])
+            return "weather", {"location": location, "forecast": include_forecast}
+        
+        # Priority 3: Web search for information queries (much broader coverage)
+        elif (
+            # Explicit search terms
+            any(word in user_lower for word in ["search", "find", "look up", "google", "what is", "who is", "where is", "when is", "how is"]) or
+            # Sports and live data
+            any(word in user_lower for word in ["score", "vs", "match", "game", "tournament", "league", "cricket", "football", "basketball", "tennis", "live"]) or
+            # News and current events
+            any(word in user_lower for word in ["news", "latest", "today", "yesterday", "recent", "current", "breaking", "update"]) or
+            # Technology and learning
+            any(word in user_lower for word in ["tutorial", "guide", "how to", "python", "javascript", "programming", "code", "learn"]) or
+            # General information
+            any(word in user_lower for word in ["information", "about", "details", "explain", "definition", "meaning", "tell me"]) or
+            # Question patterns
+            user_lower.startswith(("what", "who", "where", "when", "how", "why"))
+        ) and "web_search" in tool_names:
+            # Clean the query but preserve context
+            query = user_query
+            for word in ["search for", "search", "find me", "look up", "google", "tell me"]:
+                query = query.replace(word, "").strip()
+            if not query or len(query) < 3:
+                query = user_query.strip()
             return "web_search", {"query": query}
-        elif any(word in user_lower for word in ["system", "info"]) and "system_info" in tool_names:
+        
+        # Priority 4: File operations
+        elif any(word in user_lower for word in ["file", "read", "list", "directory"]) and "file_list" in tool_names:
+            return "file_list", {"directory": "."}
+        
+        # Priority 5: System info
+        elif any(word in user_lower for word in ["system", "info", "memory", "cpu", "disk"]) and "system_info" in tool_names:
             return "system_info", {"info_type": "all"}
         
-        # Default to file_list as it's safest
+        # Default: Web search for any other queries (since it's most versatile)
+        if "web_search" in tool_names:
+            return "web_search", {"query": user_query}
+        
+        # Final fallback
         if "file_list" in tool_names:
             return "file_list", {"directory": "."}
         
