@@ -106,8 +106,153 @@ def display_weather_card(weather_data: Dict[str, Any], url: str = ""):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+def rank_search_results(results: List[Dict[str, Any]], query: str, is_sports: bool, is_news: bool, is_tech: bool) -> List[Dict[str, Any]]:
+    """Rank search results based on relevance to query type and content quality."""
+    
+    def calculate_relevance_score(result):
+        title = result.get("title", "").lower()
+        snippet = result.get("snippet", "").lower()
+        source = result.get("source", "").lower()
+        url = result.get("url", "").lower()
+        
+        score = 0
+        query_lower = query.lower()
+        
+        # Base score from existing result score
+        score += result.get("score", 0) * 10
+        
+        # Query-specific scoring
+        if is_sports:
+            sports_keywords = ["score", "vs", "v", "match", "game", "live", "cricket", "football", "basketball", "tennis", "tournament", "league"]
+            sports_sources = ["espn", "cricbuzz", "sports", "espncricinfo", "bbc sport"]
+            
+            # Boost sports-related content
+            score += sum(5 for keyword in sports_keywords if keyword in title)
+            score += sum(3 for keyword in sports_keywords if keyword in snippet)
+            score += sum(10 for source_name in sports_sources if source_name in source)
+            
+            # Extra boost for live content
+            if "live" in title or "live" in snippet:
+                score += 15
+        
+        elif is_news:
+            news_keywords = ["news", "latest", "breaking", "today", "current", "update"]
+            news_sources = ["bbc", "cnn", "reuters", "ap news", "news"]
+            
+            score += sum(5 for keyword in news_keywords if keyword in title)
+            score += sum(3 for keyword in news_keywords if keyword in snippet)
+            score += sum(10 for source_name in news_sources if source_name in source)
+        
+        elif is_tech:
+            tech_keywords = ["tutorial", "guide", "documentation", "programming", "code", "python", "javascript"]
+            tech_sources = ["stackoverflow", "github", "docs", "tutorial", "dev.to", "medium"]
+            
+            score += sum(5 for keyword in tech_keywords if keyword in title)
+            score += sum(3 for keyword in tech_keywords if keyword in snippet)
+            score += sum(10 for source_name in tech_sources if source_name in source)
+        
+        # General quality indicators
+        quality_indicators = ["wikipedia", "official", "documentation", "guide"]
+        score += sum(5 for indicator in quality_indicators if indicator in source)
+        
+        # Query term matching
+        query_terms = query_lower.split()
+        for term in query_terms:
+            if len(term) > 2:  # Skip very short terms
+                if term in title:
+                    score += 8
+                if term in snippet:
+                    score += 4
+        
+        return score
+    
+    # Calculate scores and sort
+    scored_results = [(result, calculate_relevance_score(result)) for result in results]
+    scored_results.sort(key=lambda x: x[1], reverse=True)
+    
+    return [result for result, score in scored_results]
+
+
+def display_sports_scorecard(result: Dict[str, Any], query: str):
+    """Display a dedicated sports scorecard for live scores and match results."""
+    
+    title = result.get("title", "Match")
+    snippet = result.get("snippet", "")
+    url = result.get("url", "")
+    source = result.get("source", "Sports")
+    
+    # Extract teams and score from title/snippet if possible
+    teams = "vs"
+    score = ""
+    
+    # Try to extract team names and scores
+    import re
+    
+    # Look for patterns like "Team1 vs Team2" or "Team1 v Team2"
+    team_pattern = r'([A-Za-z\s]+?)\s+(?:vs?\.?|v\.?)\s+([A-Za-z\s]+)'
+    team_match = re.search(team_pattern, title + " " + snippet)
+    
+    if team_match:
+        team1, team2 = team_match.groups()
+        teams = f"{team1.strip()} vs {team2.strip()}"
+    
+    # Look for score patterns
+    score_patterns = [
+        r'(\d+)-(\d+)',  # 123-456
+        r'(\d+)\s*:\s*(\d+)',  # 123 : 456
+        r'(\d+)\s+(\d+)',  # 123 456 (if context suggests score)
+    ]
+    
+    for pattern in score_patterns:
+        score_match = re.search(pattern, snippet)
+        if score_match:
+            score = f"{score_match.group(1)} - {score_match.group(2)}"
+            break
+    
+    # Create sports scorecard
+    with st.container():
+        st.markdown("""
+        <div style="
+            background: linear-gradient(135deg, #00b894 0%, #00a085 100%);
+            padding: 1.5rem;
+            border-radius: 15px;
+            color: white;
+            margin: 1rem 0;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        ">
+        """, unsafe_allow_html=True)
+        
+        # Header
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"### 🏏 {teams}")
+        with col2:
+            st.markdown("**LIVE**", help="Live match information")
+        
+        # Main score display
+        if score:
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.markdown(f"<div style='font-size: 2.5rem; font-weight: bold; text-align: center;'>{score}</div>", 
+                           unsafe_allow_html=True)
+        
+        # Match details
+        st.markdown("**Match Details:**")
+        st.write(snippet[:200] + "..." if len(snippet) > 200 else snippet)
+        
+        # Action buttons
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if url:
+                st.link_button("📊 Full Scorecard", url)
+        with col2:
+            st.link_button("🔄 Refresh", url)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def display_web_search_results(results: List[Dict[str, Any]], metadata: Dict[str, Any]):
-    """Display web search results in a beautiful, user-friendly format."""
+    """Display web search results in a beautiful, user-friendly format with enhanced sports support."""
     
     # Header with search query
     query = metadata.get("query", "Search")
@@ -116,30 +261,47 @@ def display_web_search_results(results: List[Dict[str, Any]], metadata: Dict[str
     
     st.markdown(f"### 🔍 Search Results for: **{query}**")
     
+    # Detect query type for specialized displays
+    query_lower = query.lower()
+    is_sports_query = any(word in query_lower for word in ["score", "vs", "v", "match", "game", "cricket", "football", "basketball", "tennis", "live"])
+    is_news_query = any(word in query_lower for word in ["news", "latest", "today", "breaking", "current"])
+    is_tech_query = any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial", "how to"])
+    
     # Check if these are fallback results or specific search types
     is_fallback = any("No instant results found" in result.get("snippet", "") or 
                      "Search the web for comprehensive" in result.get("snippet", "") for result in results)
     
-    query_lower = query.lower()
+    # Rank and prioritize results based on query type and relevance
+    prioritized_results = rank_search_results(results, query, is_sports_query, is_news_query, is_tech_query)
     
     if is_fallback:
         if any(word in query_lower for word in ["weather", "temperature", "forecast"]):
             st.info("💡 **Weather searches work best with dedicated weather sites:**")
-        elif any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial"]):
+        elif is_tech_query:
             st.info("💡 **Programming searches - here are the best resources:**")
-        elif any(word in query_lower for word in ["news", "latest", "today", "recent"]):
+        elif is_news_query:
             st.info("💡 **Current news and information - try these sources:**")
+        elif is_sports_query:
+            st.info("💡 **Sports scores and live updates - try these sources:**")
         else:
             st.info("💡 **Here are helpful search options for your query:**")
     else:
-        # We have actual results
-        result_types = [r.get("source", "") for r in results]
-        if any("Wikipedia" in source for source in result_types):
-            st.success("✅ **Found encyclopedia and reference information:**")
-        elif any("Instant Answer" in source for source in result_types):
-            st.success("✅ **Found instant answers:**")
+        # Show specialized headers based on query type
+        if is_sports_query:
+            st.success("🏏 **Found sports and live score information:**")
+        elif is_news_query:
+            st.success("📰 **Found current news and updates:**")
+        elif is_tech_query:
+            st.success("💻 **Found programming and technical resources:**")
         else:
-            st.success("✅ **Found search results:**")
+            # General results
+            result_types = [r.get("source", "") for r in prioritized_results]
+            if any("Wikipedia" in source for source in result_types):
+                st.success("✅ **Found encyclopedia and reference information:**")
+            elif any("Instant Answer" in source for source in result_types):
+                st.success("✅ **Found instant answers:**")
+            else:
+                st.success("✅ **Found search results:**")
     
     # Results summary
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -156,19 +318,24 @@ def display_web_search_results(results: List[Dict[str, Any]], metadata: Dict[str
     
     st.markdown("---")
     
-    # Display each search result as a card
-    for i, result in enumerate(results):
+    # Display each search result as a card with specialized displays
+    for i, result in enumerate(prioritized_results):
         title = result.get("title", "Untitled")
         snippet = result.get("snippet", "No description available")
         url = result.get("url", "")
         source = result.get("source", "Unknown")
         result_type = result.get("type", "normal")
         
-        # Check if this is a weather card that needs special display
+        # Special displays for different content types
         if result_type == "weather_card" and result.get("weather_data"):
             display_weather_card(result["weather_data"], url)
+        elif is_sports_query and i == 0 and any(keyword in title.lower() + snippet.lower() for keyword in ["score", "vs", "v", "match", "live"]):
+            # Show the most relevant sports result as a scorecard
+            display_sports_scorecard(result, query)
         else:
-            # Create a card-like container for normal results
+            # Create enhanced card-like container for normal results
+            priority_class = "high-priority" if i == 0 else "normal-priority"
+            
             with st.container():
                 # Title with link
                 if url:

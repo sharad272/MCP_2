@@ -408,8 +408,31 @@ class WebSearchTool(BaseTool):
         # Try to create helpful search results based on query type
         query_lower = query.lower()
         
+        # Sports and live scores
+        if any(word in query_lower for word in ["score", "vs", "v", "match", "game", "cricket", "football", "basketball", "tennis", "live"]):
+            results.extend(
+                [
+                    SearchResult(
+                        title=f"🏏 Live Score: {query}",
+                        snippet="Get live scores, match updates, and detailed scorecards from ESPN Cricinfo and other sports sources.",
+                        url=f"https://www.espncricinfo.com/search?q={encoded_query}",
+                        source="ESPN Cricinfo",
+                        type="sports",
+                        score=1.0,
+                    ),
+                    SearchResult(
+                        title=f"📊 Sports Updates: {query}",
+                        snippet="Live sports scores, match results, and tournament updates from multiple sports websites.",
+                        url=f"https://duckduckgo.com/?q={encoded_query}+live+score",
+                        source="Sports",
+                        type="sports",
+                        score=0.9,
+                    ),
+                ]
+            )
+        
         # Programming/technical queries
-        if any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial", "how to"]):
+        elif any(word in query_lower for word in ["python", "javascript", "programming", "code", "tutorial", "how to"]):
             results.extend(
                 [
                     SearchResult(
