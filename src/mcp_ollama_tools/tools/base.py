@@ -18,6 +18,38 @@ class ToolResult(BaseModel):
     data: Any = None
     error: Optional[str] = None
     metadata: Dict[str, Any] = {}
+    
+    # Enhanced metadata for display preferences
+    display_preferences: Dict[str, Any] = {}
+    formatting_hints: Dict[str, Any] = {}
+    
+    def set_display_preference(self, key: str, value: Any) -> None:
+        """Set a display preference for this result."""
+        if not self.display_preferences:
+            self.display_preferences = {}
+        self.display_preferences[key] = value
+    
+    def set_formatting_hint(self, key: str, value: Any) -> None:
+        """Set a formatting hint for this result."""
+        if not self.formatting_hints:
+            self.formatting_hints = {}
+        self.formatting_hints[key] = value
+    
+    def suggest_renderer(self, renderer_type: str) -> None:
+        """Suggest a specific renderer type for this result."""
+        self.set_display_preference("preferred_renderer", renderer_type)
+    
+    def set_priority_display(self, priority: int = 100) -> None:
+        """Set display priority (higher = more prominent)."""
+        self.set_display_preference("priority", priority)
+    
+    def enable_compact_mode(self, compact: bool = True) -> None:
+        """Enable or disable compact display mode."""
+        self.set_display_preference("compact", compact)
+    
+    def set_theme_hint(self, theme: str) -> None:
+        """Set theme hint (e.g., 'success', 'warning', 'error', 'info')."""
+        self.set_formatting_hint("theme", theme)
 
 
 class BaseTool(ABC):

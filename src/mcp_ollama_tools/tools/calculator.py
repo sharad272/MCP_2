@@ -103,7 +103,8 @@ class CalculatorTool(BaseTool):
             else:
                 formatted_result = result
             
-            return ToolResult(
+            # Create enhanced result with display preferences
+            result_obj = ToolResult(
                 success=True,
                 data=formatted_result,
                 metadata={
@@ -113,6 +114,17 @@ class CalculatorTool(BaseTool):
                     "result_type": type(result).__name__
                 }
             )
+            
+            # Set display preferences for mathematical results
+            result_obj.set_theme_hint("success")
+            result_obj.set_display_preference("highlight_result", True)
+            result_obj.suggest_renderer("calculator")
+            
+            # If it's a simple calculation, use compact mode
+            if len(expression) < 20 and any(op in expression for op in ['+', '-', '*', '/']):
+                result_obj.enable_compact_mode(True)
+            
+            return result_obj
             
         except (SyntaxError, ValueError) as e:
             return ToolResult(

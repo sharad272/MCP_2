@@ -28,6 +28,7 @@ from mcp_ollama_tools.tools.web_search import WebSearchTool
 from mcp_ollama_tools.tools.system_info import SystemInfoTool
 from mcp_ollama_tools.tools.calculator import CalculatorTool
 from mcp_ollama_tools.tools.weather import WeatherTool
+from mcp_ollama_tools.response_renderer import rendering_engine, render_streamlit_components
 
 # Register tools globally at startup
 def register_tools_globally():
@@ -763,6 +764,43 @@ def render_sidebar():
             help="Use fast heuristic tool selection instead of AI for common requests"
         )
         
+        # Display preferences
+        st.markdown("#### 🎨 Display Preferences")
+        
+        # Initialize display preferences
+        if "display_preferences" not in st.session_state:
+            st.session_state.display_preferences = {
+                "compact_mode": False,
+                "dark_mode": False,
+                "show_technical_details": False,
+                "preferred_response_style": "enhanced"
+            }
+        
+        # Compact mode
+        st.session_state.display_preferences["compact_mode"] = st.checkbox(
+            "📦 Compact Mode",
+            value=st.session_state.display_preferences["compact_mode"],
+            help="Show more condensed responses with less spacing"
+        )
+        
+        # Response style
+        st.session_state.display_preferences["preferred_response_style"] = st.selectbox(
+            "🎯 Response Style",
+            ["enhanced", "simple", "detailed"],
+            index=["enhanced", "simple", "detailed"].index(st.session_state.display_preferences["preferred_response_style"]),
+            help="Choose how responses are displayed"
+        )
+        
+        # Technical details
+        st.session_state.display_preferences["show_technical_details"] = st.checkbox(
+            "🔧 Show Technical Details",
+            value=st.session_state.display_preferences["show_technical_details"],
+            help="Show execution metadata and technical information"
+        )
+        
+        # Update rendering engine preferences
+        rendering_engine.set_user_preferences(st.session_state.display_preferences)
+        
         # Clear History Button
         st.markdown("---")
         if st.button("🗑️ Clear History", use_container_width=True):
@@ -871,71 +909,73 @@ def main():
                 # Success response
                 response_parts = [f"✅ **Successfully processed your request!**\n"]
                 
-                # Add execution summary
+                # Process execution results using generic rendering system
                 execution_history = result.get("execution_history", [])
+                special_tools_used = []
+                text_responses = []
+                
                 if execution_history:
-                    response_parts.append(f"**🔧 Executed {len(execution_history)} tool(s):**\n")
+                    text_responses.append(f"**🔧 Executed {len(execution_history)} tool(s):**\n")
                     
                     for i, execution in enumerate(execution_history, 1):
                         status = "✅" if execution["success"] else "❌"
-                        response_parts.append(
-                            f"{status} **Step {i}**: {execution['tool']}\n"
-                        )
+                        text_responses.append(f"{status} **Step {i}**: {execution['tool']}\n")
                         
                         if execution["success"]:
-                            # Check if this is a web search result
-                            if execution["tool"] == "web_search":
-                                result_data = execution.get("result") or execution.get("data")
-                                if result_data and isinstance(result_data, list):
-                                    display_web_search_results(result_data, execution.get("metadata", {}))
+                            result_data = execution.get("result") or execution.get("data")
+                            tool_name = execution["tool"]
+                            metadata = execution.get("metadata", {})
+                            
+                            if result_data:
+                                # Render using the generic system
+                                rendered_response = rendering_engine.render_response(
+                                    tool_name=tool_name,
+                                    result_data=result_data,
+                                    metadata=metadata,
+                                    user_query=prompt,
+                                    tool_result=execution  # Pass the full execution result
+                                )
+                                
+                                # Check if this uses special rendering
+                                has_special_components = any(
+                                    comp.type not in ["text", "header"] 
+                                    for comp in rendered_response.components
+                                )
+                                
+                                if has_special_components:
+                                    # Display the rendered components for special tools
+                                    render_streamlit_components(rendered_response)
+                                    special_tools_used.append(tool_name)
                                 else:
-                                    response_parts.append(f"📋 **Search completed but no results to display**\n")
-                            # Check if this is a weather result
-                            elif execution["tool"] == "weather":
-                                result_data = execution.get("result") or execution.get("data")
-                                if result_data and isinstance(result_data, dict):
-                                    display_weather_card(result_data)
-                                else:
-                                    response_parts.append(f"📋 **Weather data not available**\n")
+                                    # Add to text response for simple tools
+                                    text_responses.append(f"📋 **Result**: {rendered_response.summary_text}\n")
                             else:
-                                # Handle other tools normally
-                                result_data = execution.get("result") or execution.get("data")
-                                if result_data:
-                                    result_str = str(result_data)
-                                    if len(result_str) > 500:
-                                        result_str = result_str[:500] + "..."
-                                    response_parts.append(f"📋 **Result**: {result_str}\n")
-                                else:
-                                    response_parts.append(f"✅ **Completed successfully**\n")
+                                text_responses.append(f"✅ **Completed successfully**\n")
                 
-                # Only show text response for tools that don't have special displays
-                special_tools = ["web_search", "weather"]
-                has_special_display = any(ex.get("tool") in special_tools and ex.get("success") for ex in execution_history)
-                
-                if not has_special_display:
-                    response = "\n".join(response_parts)
+                # Display text responses for non-special tools
+                if text_responses and not special_tools_used:
+                    response = "\n".join(text_responses)
                     st.markdown(response)
                 
-                # Store message (simplified for special display tools)
-                if has_special_display:
-                    # Check which special tool was used
-                    if any(ex.get("tool") == "web_search" and ex.get("success") for ex in execution_history):
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": "🔍 Web search completed - results displayed above"
-                        })
-                    elif any(ex.get("tool") == "weather" and ex.get("success") for ex in execution_history):
-                        st.session_state.messages.append({
-                            "role": "assistant", 
-                            "content": "🌤️ Weather information displayed above"
-                        })
-                else:
-                    response = "\n".join(response_parts)
+                # Store appropriate message
+                if special_tools_used:
+                    if "web_search" in special_tools_used:
+                        message_content = "🔍 Web search completed - results displayed above"
+                    elif "weather" in special_tools_used:
+                        message_content = "🌤️ Weather information displayed above"
+                    else:
+                        message_content = f"✅ Results displayed above using {', '.join(set(special_tools_used))}"
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": message_content
+                    })
+                elif text_responses:
+                    response = "\n".join(text_responses)
                     st.session_state.messages.append({
                         "role": "assistant", 
                         "content": response
                     })
-                    st.markdown(response)
                 
                 # Show simple execution summary
                 if execution_history:
