@@ -29,6 +29,7 @@ from mcp_ollama_tools.tools.system_info import SystemInfoTool
 from mcp_ollama_tools.tools.calculator import CalculatorTool
 from mcp_ollama_tools.tools.weather import WeatherTool
 from mcp_ollama_tools.response_renderer import rendering_engine, render_streamlit_components
+from mcp_ollama_tools.conversation_memory import conversation_memory
 
 # Register tools globally at startup
 def register_tools_globally():
@@ -801,6 +802,52 @@ def render_sidebar():
         # Update rendering engine preferences
         rendering_engine.set_user_preferences(st.session_state.display_preferences)
         
+        # Smart Suggestions
+        st.markdown("---")
+        st.markdown("### 💡 Smart Suggestions")
+        
+        smart_suggestions = conversation_memory.get_smart_suggestions()
+        if smart_suggestions:
+            for suggestion in smart_suggestions[:4]:  # Show top 4
+                if st.button(
+                    f"{suggestion['icon']} {suggestion['title']}", 
+                    key=f"suggestion_{suggestion['type']}",
+                    use_container_width=True
+                ):
+                    # Add the suggested query to chat
+                    st.session_state.messages.append({"role": "user", "content": suggestion['query']})
+                    st.rerun()
+        else:
+            st.info("💭 Ask a few questions to get personalized suggestions!")
+        
+        # User Achievements
+        st.markdown("---")
+        st.markdown("### 🏆 Achievements")
+        
+        achievements = conversation_memory.get_achievements()
+        if achievements:
+            with st.expander("View Achievements", expanded=False):
+                for achievement in achievements:
+                    if achievement["earned"]:
+                        st.success(f"{achievement['icon']} **{achievement['title']}** - {achievement['description']}")
+                    else:
+                        st.info(f"🔒 {achievement['title']} - {achievement['description']}")
+        
+        # Conversation Insights
+        if len(st.session_state.messages) > 4:
+            with st.expander("📊 Conversation Insights", expanded=False):
+                profile = conversation_memory.user_profile
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Queries", profile.total_queries)
+                    st.metric("Success Rate", f"{profile.successful_queries / max(profile.total_queries, 1) * 100:.1f}%")
+                
+                with col2:
+                    favorite_tool = max(profile.preferred_tools.items(), key=lambda x: x[1], default=("None", 0))
+                    st.metric("Favorite Tool", favorite_tool[0])
+                    st.metric("Tools Used", len(profile.preferred_tools))
+        
         # Clear History Button
         st.markdown("---")
         if st.button("🗑️ Clear History", use_container_width=True):
@@ -813,6 +860,9 @@ def render_sidebar():
                 "tools_used": {},
                 "session_start": datetime.now()
             }
+            # Reset conversation memory
+            conversation_memory.conversation_history = []
+            conversation_memory.user_profile = conversation_memory.UserProfile()
             st.rerun()
 
 
@@ -828,33 +878,104 @@ def main():
     st.markdown('<div class="main-header">🤖 MCP Ollama Tools</div>', unsafe_allow_html=True)
     st.markdown("### Intelligent Tool Selection with Llama 3.2")
     
-    # Introduction
+    # Dynamic Introduction
     if not st.session_state.messages:
-        st.markdown("""
-        Welcome to **MCP Ollama Tools**! 🎉
+        # Welcome message with personality
+        welcome_col1, welcome_col2 = st.columns([2, 1])
         
-        This is an intelligent tool selection system that uses **Llama 3.2** via Ollama to understand your requests 
-        and automatically choose the best tools to help you.
+        with welcome_col1:
+            st.markdown("""
+            # 🤖 Welcome to MCP Ollama Tools!
+            
+            Your **intelligent assistant** powered by **Llama 3.2** that learns from your conversations 
+            and provides personalized, interactive responses.
+            
+            ### ✨ What Makes This Special:
+            
+            🧠 **Smart & Learning**: Remembers your preferences and suggests relevant queries  
+            ⚡ **Lightning Fast**: Instant math, cached results, sub-second responses  
+            🎨 **Beautiful & Interactive**: Rich visualizations, interactive components, real-time updates  
+            🏆 **Gamified Experience**: Earn achievements, track progress, unlock features  
+            
+            ### 🛠️ Powerful Tools at Your Service:
+            """)
+            
+            # Interactive tool showcase
+            tool_cols = st.columns(4)
+            tools_info = [
+                {"name": "🧮 Calculator", "desc": "Advanced math with insights", "example": "Calculate compound interest"},
+                {"name": "🌤️ Weather", "desc": "Interactive forecasts & charts", "example": "Weather in Tokyo with forecast"},
+                {"name": "🔍 Web Search", "desc": "Smart search with rich results", "example": "Latest AI developments"},
+                {"name": "📁 Files", "desc": "File operations made easy", "example": "List my Python files"}
+            ]
+            
+            for i, tool in enumerate(tools_info):
+                with tool_cols[i]:
+                    if st.button(f"{tool['name']}", key=f"tool_demo_{i}", use_container_width=True):
+                        st.session_state.messages.append({"role": "user", "content": tool['example']})
+                        st.rerun()
+                    st.caption(tool['desc'])
         
-        **Available Tools:**
-        - 📁 **File Operations**: Read, write, and list files
-        - 🌐 **Web Search**: Search the internet using DuckDuckGo
-        - 💻 **System Info**: Get system information (CPU, memory, etc.)
-        - 🧮 **Calculator**: Perform mathematical calculations
+        with welcome_col2:
+            # Quick start suggestions
+            st.markdown("### 🚀 Quick Start")
+            
+            quick_starts = [
+                {"icon": "🧮", "text": "Try: 2+2*3", "query": "Calculate 2+2*3"},
+                {"icon": "🌤️", "text": "Weather check", "query": "What's the weather like today?"},
+                {"icon": "🔍", "text": "Search trends", "query": "What's trending in technology?"},
+                {"icon": "📊", "text": "System info", "query": "Show system information"},
+            ]
+            
+            for qs in quick_starts:
+                if st.button(f"{qs['icon']} {qs['text']}", key=f"qs_{qs['icon']}", use_container_width=True):
+                    st.session_state.messages.append({"role": "user", "content": qs['query']})
+                    st.rerun()
         
-        **⚡ Fast & Smart:**
-        - Simple math: Instant responses (e.g., "2+2", "15% of 200")
-        - Quick patterns: Sub-second tool selection
-        - Smart caching: Common requests are cached
+        # Feature highlights
+        st.markdown("---")
+        highlight_cols = st.columns(3)
         
-        **Try these examples:**
-        - "Calculate 15% of 200" (instant math)
-        - "List files in my directory" (file tool)
-        - "Search for Python tutorials" (web search)
-        - "Show system memory" (system info)
-        """)
+        with highlight_cols[0]:
+            st.info("""
+            **🎯 Personalized Experience**  
+            The more you use it, the smarter it gets! Your preferences, favorite tools, 
+            and conversation patterns help create a tailored experience just for you.
+            """)
+        
+        with highlight_cols[1]:
+            st.success("""
+            **🎮 Gamified Learning**  
+            Earn achievements, track your progress, and unlock new features as you explore. 
+            From "Curious Explorer" to "Tool Master" - what will you achieve?
+            """)
+        
+        with highlight_cols[2]:
+            st.warning("""
+            **🔮 Context Aware**  
+            Remembers your conversation flow, suggests follow-ups, and provides 
+            contextual help. It's like having a conversation with a smart friend!
+            """)
+        
+        # Call to action
+        st.markdown("---")
+        st.markdown("### 💬 Ready to start? Ask me anything!")
+        
+        # Show some example queries if user is new
+        example_queries = [
+            "Calculate the tip for a $45.67 bill at 18%",
+            "What's the weather forecast for this weekend?", 
+            "Search for the latest news about artificial intelligence",
+            "Show me my computer's memory usage"
+        ]
+        
+        st.markdown("**💡 Example queries to get you started:**")
+        for i, example in enumerate(example_queries):
+            if st.button(f"💭 {example}", key=f"example_{i}", use_container_width=True):
+                st.session_state.messages.append({"role": "user", "content": example})
+                st.rerun()
     
-            # Display chat messages
+    # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -884,6 +1005,14 @@ def main():
             
             status_text.text("🔍 Analyzing your request...")
             progress_bar.progress(20)
+            time.sleep(0.2)  # Brief pause for better UX
+            
+            status_text.text("🧠 Selecting optimal tools...")
+            progress_bar.progress(40)
+            time.sleep(0.1)
+            
+            status_text.text("⚡ Executing tools...")
+            progress_bar.progress(60)
             
             # Run async function
             start_time = time.time()
@@ -894,9 +1023,13 @@ def main():
             ))
             processing_time = time.time() - start_time
             
+            status_text.text("🎨 Rendering results...")
+            progress_bar.progress(80)
+            time.sleep(0.1)
+            
             progress_bar.progress(100)
             status_text.text(f"✅ Completed in {processing_time:.1f}s")
-            time.sleep(0.5)  # Brief pause to show completion
+            time.sleep(0.3)  # Brief pause to show completion
             
             # Clear progress indicators
             progress_bar.empty()
@@ -904,6 +1037,32 @@ def main():
             
             # Update statistics
             update_system_stats(result)
+            
+            # Update conversation memory
+            execution_history = result.get("execution_history", [])
+            tools_used = [ex["tool"] for ex in execution_history if ex.get("tool")]
+            results = [{"data": ex.get("result"), "metadata": ex.get("metadata", {})} for ex in execution_history]
+            
+            # Check for new achievements before updating
+            old_achievements = set(conversation_memory.user_profile.achievements)
+            
+            conversation_memory.add_turn(
+                user_query=prompt,
+                tools_used=tools_used,
+                results=results,
+                success=result["success"]
+            )
+            
+            # Check for new achievements after updating
+            new_achievements = set(conversation_memory.user_profile.achievements)
+            earned_achievements = new_achievements - old_achievements
+            
+            # Show achievement notifications
+            if earned_achievements:
+                for achievement in earned_achievements:
+                    st.balloons()  # Celebration effect
+                    st.success(f"🏆 **Achievement Unlocked!** {achievement}")
+                    time.sleep(0.5)
             
             if result["success"]:
                 # Success response
